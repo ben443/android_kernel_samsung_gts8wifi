@@ -6,7 +6,7 @@ on:
       BUILD_TARGET:
         description: 'Build target (e.g., gts8_kor_openx)'
         required: true
-        default: 'gts8_kor_openx'
+        default: 'gts8wifi_eur_open'
 
 jobs:
   build:
@@ -60,8 +60,8 @@ jobs:
 
       - name: Build Kernel
         run: |
-          chmod +x ./kernel_platform/build/android/prepare_vendor.sh
-          RECOMPILE_KERNEL=1 ./kernel_platform/build/android/prepare_vendor.sh sec gki
+          chmod +x ./build_kernel_GKI.sh
+          RECOMPILE_KERNEL=1 
 
       - name: List output files
         run: |
