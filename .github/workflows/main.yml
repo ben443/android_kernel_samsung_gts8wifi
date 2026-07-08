@@ -65,13 +65,13 @@ jobs:
 
       - name: List output files
         run: |
-          ls -al arch/*/boot/Image || true
-          find drivers/ -name '*.ko' || true
+          ls -al /*Image || true
+          find / -name '*.ko' || true
 
       - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-Image
           path: |
-            arch/*/boot/Image
-            drivers/**/*.ko
+            /Image
+            /*.ko
