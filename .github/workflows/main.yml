@@ -1,77 +1,130 @@
-name: Build Kernel (Manual)
+name: Build Custom Wi-Fi Kernel (SM-X700)
 
 on:
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      BUILD_TARGET:
-        description: 'Build target (e.g., gts8_kor_openx)'
-        required: true
-        default: 'gts8wifi_eur_open'
 
 jobs:
-  build:
+  build-kernel:
     runs-on: ubuntu-latest
-    env:
-      BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
-      TARGET_BUILD_VARIANT: user
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison flex libssl-dev make \
-            gcc build-essential libncurses-dev \
-            wget unzip git
+          sudo apt-get install -y build-essential bc bison flex libssl-dev make libc6-dev \
+          clang lld gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libelf-dev zip unzip python3
 
-      - name: Download Toolchain (manual step required)
+      - name: Download Android Clang Toolchain (r416183b)
         run: |
-          echo "Please manually download and extract the toolchain from:"
-          echo "https://opensource.samsung.com/uploadSearch?searchValue=Galaxy-Tab-S8"
-          echo "Extract to kernel_platform/prebuilts or kernel_platform/prebuilts-master"
-          # You may use wget/curl if the download is automatable
+          # Adjusting directory to match the nested kernel/kernel_platform tree
+          mkdir -p Kernel/kernel_platform/prebuilts-master/clang/host/linux-x86
+          cd Kernel/kernel_platform/prebuilts-master/clang/host/linux-x86
+          
+          # Clone from LineageOS stable prebuilt mirror
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang-r416183b
+          
+          # Clean up Git tracking files from the sub-toolchain
+          rm -rf clang-r416183b/.git
 
-      - name: Set up environment variables
+      - name: Compile Samsung Kernel Platform
         run: |
-          export MODEL=$(echo $BUILD_TARGET | cut -d'_' -f1)
-          export PROJECT_NAME=${MODEL}
-          export REGION=$(echo $BUILD_TARGET | cut -d'_' -f2)
-          export CARRIER=$(echo $BUILD_TARGET | cut -d'_' -f3)
-          export TARGET_BUILD_VARIANT=user
-          CHIPSET_NAME=waipio
+          set -euo pipefail
+          # Shift into the proper root platform directory before setting up variables
+          cd Kernel/kernel_platform
+
           export ANDROID_BUILD_TOP=$(pwd)
+          export MODEL=gts8wifi
+          export PROJECT_NAME=gts8wifi
+          export REGION=xsp
+          export CARRIER=open
+          export TARGET_BUILD_VARIANT=user
+          export CHIPSET_NAME=waipio
           export TARGET_PRODUCT=gki
           export TARGET_BOARD_PLATFORM=gki
           export ANDROID_PRODUCT_OUT=${ANDROID_BUILD_TOP}/out/target/product/${MODEL}
           export OUT_DIR=${ANDROID_BUILD_TOP}/out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}
-          export KBUILD_EXTRA_SYMBOLS=${ANDROID_BUILD_TOP}/out/vendor/qcom/opensource/mmrm-driver/Module.symvers
-          export MODNAME=audio_dlkm
-          export KBUILD_EXT_MODULES="../vendor/qcom/opensource/datarmnet-ext/wlan \
-            ../vendor/qcom/opensource/datarmnet/core \
-            ../vendor/qcom/opensource/mmrm-driver \
-            ../vendor/qcom/opensource/audio-kernel \
-            ../vendor/qcom/opensource/camera-kernel \
-            ../vendor/qcom/opensource/display-drivers/msm \
-          "
-          export PATH=$PATH:$(pwd)/kernel_platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
 
-      - name: Build Kernel
+          # --- APPLIED FIXES & ADDITIONAL GUARD ---
+          # 1) Attempt to create expected output directories; if that fails, fall back to /tmp to keep mktemp and other temporary ops working.
+          if mkdir -p "${ANDROID_PRODUCT_OUT}" 2>/dev/null; then
+            echo "Created ANDROID_PRODUCT_OUT: ${ANDROID_PRODUCT_OUT}"
+          else
+            FALLBACK_OUT="/tmp/android_product_out_${GITHUB_RUN_NUMBER:-$$}"
+            echo "Warning: could not create ${ANDROID_PRODUCT_OUT}, falling back to ${FALLBACK_OUT}"
+            export ANDROID_PRODUCT_OUT="${FALLBACK_OUT}"
+            mkdir -p "${ANDROID_PRODUCT_OUT}"
+          fi
+
+          # ensure a tmp directory under product out for mktemp usage
+          mkdir -p "${ANDROID_PRODUCT_OUT}/tmp" || true
+
+          # ensure OUT_DIR exists (best-effort)
+          if ! mkdir -p "${OUT_DIR}" 2>/dev/null; then
+            echo "Warning: could not create ${OUT_DIR}; continuing (some build outputs may go to fallback tmp)"
+          fi
+
+          # 2) Set TMPDIR to a writable, present directory (prefer product-out/tmp, else /tmp)
+          if [ -w "${ANDROID_PRODUCT_OUT}/tmp" ]; then
+            export TMPDIR="${ANDROID_PRODUCT_OUT}/tmp"
+          else
+            echo "Note: ${ANDROID_PRODUCT_OUT}/tmp is not writable, using /tmp for TMPDIR"
+            export TMPDIR="/tmp"
+          fi
+          mkdir -p "${TMPDIR}" || true
+
+          # 3) Ensure the vendor preparation and helper scripts are executable, only if present.
+          if [ -f build/android/prepare_vendor.sh ]; then
+            chmod +x build/android/prepare_vendor.sh
+          else
+            echo "Error: build/android/prepare_vendor.sh not found in $(pwd)/build/android"
+            ls -la build || true
+            exit 1
+          fi
+
+          for f in build/brunch build/build.sh build/build_abi.sh build/config.sh build/all-variants.sh build/copy_symbols.sh build/synchronize_owners; do
+            if [ -f "$f" ]; then
+              chmod +x "$f" || true
+            else
+              echo "Note: helper script $f not found; skipping chmod"
+            fi
+          done
+
+          # Show quick debug info (permission and path checks)
+          echo "Using ANDROID_PRODUCT_OUT=${ANDROID_PRODUCT_OUT}"
+          echo "Using TMPDIR=${TMPDIR}"
+          ls -ld "${ANDROID_PRODUCT_OUT}" "${ANDROID_PRODUCT_OUT}/tmp" "${OUT_DIR}" || true
+          if [ -f build/brunch ]; then ls -la build/brunch || true; else echo "Warning: build/brunch not present; prepare_vendor.sh may fail if it requires this helper"; fi
+
+          # Run the vendor preparation (recompile kernel)
+          RECOMPILE_KERNEL=1 build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}
+
+      - name: Fetch and Package with AnyKernel3
         run: |
-          chmod +x ./build_kernel_GKI.sh
-          RECOMPILE_KERNEL=1 
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3-Staging
+          rm -rf AK3-Staging/.git
+          
+          echo "Injecting custom anykernel.sh..."
+          cp anykernel.sh AK3-Staging/ || true
+          
+          echo "Moving kernel image..."
+          cp Kernel/kernel_platform/out/msm-waipio-waipio-gki/arch/arm64/boot/Image AK3-Staging/ || true
+          
+          echo "Moving compiled Wi-Fi modules..."
+          mkdir -p AK3-Staging/modules/vendor/lib/modules/
+          find Kernel/kernel_platform/out/msm-waipio-waipio-gki/ -type f -name "*.ko" -exec cp {} AK3-Staging/modules/vendor/lib/modules/ \; || true
+          
+          echo "Zipping flashable file..."
+          cd AK3-Staging
+          zip -r9 ../Custom-Kernel-SM-X700.zip * || true
 
-      - name: List output files
-        run: |
-          ls -al /*Image || true
-          find / -name '*.ko' || true
-
-      - name: Upload Kernel Image
+      - name: Upload Flashable Zip
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Image
-          path: |
-            /Image
-            /*.ko
+          name: Custom-Kernel-SM-X700
+          path: Custom-Kernel-SM-X700.zip
+          
