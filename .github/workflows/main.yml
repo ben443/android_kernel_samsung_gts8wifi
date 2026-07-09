@@ -21,15 +21,23 @@ jobs:
 
       - name: Download Android Clang Toolchain (r416183b)
         run: |
+          set -euo pipefail
+
           # Adjusting directory to match the nested kernel/kernel_platform tree
           mkdir -p kernel_platform/prebuilts-master/clang/host/linux-x86
           cd kernel_platform/prebuilts-master/clang/host/linux-x86
-          
+
+          # Ensure a clean target directory (remove if present) so git clone won't fail
+          if [ -d clang-r416183b ]; then
+            echo "clang-r416183b already exists: removing to ensure clean clone"
+            rm -rf clang-r416183b
+          fi
+
           # Clone from LineageOS stable prebuilt mirror
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang-r416183b
-          
+
           # Clean up Git tracking files from the sub-toolchain
-          rm -rf clang-r416183b/.git
+          rm -rf clang-r416183b/.git || true
 
       - name: Compile Samsung Kernel Platform
         run: |
@@ -127,4 +135,3 @@ jobs:
         with:
           name: Custom-Kernel-SM-X700
           path: Custom-Kernel-SM-X700.zip
-          
