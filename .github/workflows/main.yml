@@ -144,16 +144,29 @@ jobs:
             echo "Running make mrproper in kernel_platform/common..."
             cd common
             
-            # Remove any previous build artifacts
+            # Remove any previous build artifacts and problematic references
             rm -rf .config* .version* Module.symvers build/ 2>/dev/null || true
             
+            # Remove problematic directories that may be referenced but don't exist
+            # This fixes: "drivers/kernelsu/Makefile: No such file or directory"
+            rm -rf drivers/kernelsu 2>/dev/null || true
+            
+            # Remove other potentially problematic module directories
+            rm -rf drivers/wlan 2>/dev/null || true
+            rm -rf drivers/staging 2>/dev/null || true
+            
             # Run mrproper to clean the kernel tree
-            make mrproper || {
-              echo "WARNING: make mrproper failed, attempting manual cleanup..."
-              find . -name "*.o" -delete
-              find . -name "*.ko" -delete
-              find . -name ".*.cmd" -delete
-            }
+            if ! make mrproper 2>&1; then
+              echo "WARNING: make mrproper encountered issues, but proceeding with alternative cleanup..."
+              # Manual cleanup if make mrproper fails
+              find . -name "*.o" -delete 2>/dev/null || true
+              find . -name "*.ko" -delete 2>/dev/null || true
+              find . -name ".*.cmd" -delete 2>/dev/null || true
+              find . -name ".config*" -delete 2>/dev/null || true
+              find . -name ".version*" -delete 2>/dev/null || true
+              find . -type f -name "modules.order" -delete 2>/dev/null || true
+              find . -type f -name "Module.symvers" -delete 2>/dev/null || true
+            fi
             
             cd ..
             echo "✓ Kernel source tree cleaned"
