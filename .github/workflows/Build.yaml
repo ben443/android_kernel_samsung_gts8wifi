@@ -1,0 +1,115 @@
+name: Build Kernel v2
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            python3 \
+            libssl-dev \
+            bison \
+            flex \
+            libelf-dev \
+            bc \
+            pahole \
+            gcc-arm-linux-gnueabihf \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabihf
+      
+      - name: Build kernel
+        run: |
+          # Set architecture and cross compilation flags
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # Create output directory
+          mkdir -p out
+          
+          # Copy default config if available
+          if [ -f arch/arm64/configs/gts8wifi_defconfig ]; then
+            make -C kernel_platform/msm-kernel O=../out gts8wifi_defconfig
+          else
+            make -C kernel_platform/msm-kernel O=../out defconfig
+          fi
+          
+          # Build the kernel
+          make -C kernel_platform/msm-kernel O=../out -j$(nproc)
+      
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          
+          # Copy kernel image
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image artifacts/
+            echo "✓ Kernel image copied"
+          fi
+          
+          # Copy device tree blobs
+          if [ -f out/arch/arm64/boot/dts/*.dtb ]; then
+            cp out/arch/arm64/boot/dts/*.dtb artifacts/ 2>/dev/null || true
+            echo "✓ DTB files copied"
+          fi
+          
+          # Copy kernel modules if built
+          if [ -d out/lib/modules ]; then
+            tar -czf artifacts/modules.tar.gz -C out lib/modules
+            echo "✓ Kernel modules archived"
+          fi
+          
+          # Copy kernel config
+          if [ -f out/.config ]; then
+            cp out/.config artifacts/kernel-config
+            echo "✓ Kernel config copied"
+          fi
+          
+          # Create a summary
+          cat > artifacts/BUILD_INFO.txt << EOF
+          Build Information
+          ==================
+          Build Date: $(date)
+          Commit: $(git rev-parse --short HEAD)
+          Branch: $(git rev-parse --abbrev-ref HEAD)
+          
+          Artifacts:
+          - Image: Compiled kernel image
+          - *.dtb: Device tree blobs
+          - modules.tar.gz: Kernel modules
+          - kernel-config: Kernel build configuration
+          EOF
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-artifacts
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+      
+      - name: Create release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
