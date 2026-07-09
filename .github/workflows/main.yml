@@ -22,8 +22,8 @@ jobs:
       - name: Download Android Clang Toolchain (r416183b)
         run: |
           # Adjusting directory to match the nested kernel/kernel_platform tree
-          mkdir -p Kernel/kernel_platform/prebuilts-master/clang/host/linux-x86
-          cd Kernel/kernel_platform/prebuilts-master/clang/host/linux-x86
+          mkdir -p kernel_platform/prebuilts-master/clang/host/linux-x86
+          cd kernel_platform/prebuilts-master/clang/host/linux-x86
           
           # Clone from LineageOS stable prebuilt mirror
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang-r416183b
@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           # Shift into the proper root platform directory before setting up variables
-          cd Kernel/kernel_platform
+          cd kernel_platform
 
           export ANDROID_BUILD_TOP=$(pwd)
           export MODEL=gts8wifi
@@ -112,7 +112,7 @@ jobs:
           cp anykernel.sh AK3-Staging/ || true
           
           echo "Moving kernel image..."
-          cp Kernel/kernel_platform/out/msm-waipio-waipio-gki/arch/arm64/boot/Image AK3-Staging/ || true
+          cp kernel_platform/out/msm-waipio-waipio-gki/arch/arm64/boot/Image AK3-Staging/ || true
           
           echo "Moving compiled Wi-Fi modules..."
           mkdir -p AK3-Staging/modules/vendor/lib/modules/
