@@ -20,7 +20,7 @@ env:
 jobs:
   build-kernel:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
 
     steps:
       - name: Checkout Kernel Source
@@ -214,10 +214,10 @@ jobs:
           echo "LTO_CONFIG=$OUT_DIR/lto_disable.config" >> "$GITHUB_ENV"
 
       - name: Compile Kernel
-        timeout-minutes: 240
+        timeout-minutes: 300
         run: |
           set -euo pipefail
-          echo "🚀 Starting kernel compilation (LTO disabled for faster build)..."
+          echo "🚀 Starting kernel compilation (LTO disabled, parallel jobs limited)..."
           
           cd "$ANDROID_BUILD_TOP"
           
@@ -229,8 +229,9 @@ jobs:
           # Add toolchain to PATH
           export PATH="${CLANG_PATH}/bin:${PATH}"
           
-          # Disable LTO to reduce compilation time
+          # Disable LTO and reduce parallel jobs for reliable builds
           export KBUILD_CFLAGS="-O2 -Wno-error"
+          export KBUILD_JOBS=4
           
           echo "📋 Build Configuration:"
           echo "  MODEL=${MODEL}"
@@ -239,7 +240,8 @@ jobs:
           echo "  ARCH=${ARCH}"
           echo "  CROSS_COMPILE=${CROSS_COMPILE}"
           echo "  OUT_DIR=${OUT_DIR}"
-          echo "  LTO Status: DISABLED (faster builds)"
+          echo "  LTO Status: DISABLED (faster builds) ✅"
+          echo "  Parallel Jobs: 4 (reduced for stability) ✅"
           echo "  Compiler: Clang"
           
           # Verify toolchain is accessible
@@ -435,8 +437,9 @@ jobs:
           echo "- **Chipset**: ${{ env.CHIPSET_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Product**: ${{ env.TARGET_PRODUCT }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Optimization**: LTO Disabled ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- **Job Timeout**: 300 minutes" >> $GITHUB_STEP_SUMMARY
-          echo "- **Compile Timeout**: 240 minutes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Parallel Jobs**: 4 (limited for stability) ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Job Timeout**: 360 minutes (6 hours)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compile Timeout**: 300 minutes (5 hours)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -f Custom-Kernel-SM-X700.zip ]; then
