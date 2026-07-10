@@ -20,7 +20,7 @@ env:
 jobs:
   build-kernel:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
 
     steps:
       - name: Checkout Kernel Source
@@ -41,6 +41,7 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/share/swift
           
           echo "📊 Disk space after cleanup:"
           df -h / | tail -1
@@ -188,10 +189,35 @@ jobs:
             echo "✓ Kernel cleaned manually"
           fi
 
-      - name: Compile Kernel
+      - name: Disable LTO for Faster Build
         run: |
           set -euo pipefail
-          echo "🚀 Starting kernel compilation..."
+          echo "⚙️  Disabling LTO optimization to reduce compilation time..."
+          
+          cd "$ANDROID_BUILD_TOP"
+          
+          # Create kernel config fragment to disable LTO
+          mkdir -p "$OUT_DIR"
+          cat > "$OUT_DIR/lto_disable.config" << 'EOF'
+          # Disable Link-Time Optimization for faster builds
+          CONFIG_LTO_CLANG=n
+          CONFIG_LTO_CLANG_FULL=n
+          CONFIG_LTO_CLANG_THIN=n
+          CONFIG_LTO=n
+          CONFIG_LTO_GCC=n
+          EOF
+          
+          echo "✓ LTO configuration created at $OUT_DIR/lto_disable.config"
+          cat "$OUT_DIR/lto_disable.config"
+          
+          # Export for use in compilation
+          echo "LTO_CONFIG=$OUT_DIR/lto_disable.config" >> "$GITHUB_ENV"
+
+      - name: Compile Kernel
+        timeout-minutes: 240
+        run: |
+          set -euo pipefail
+          echo "🚀 Starting kernel compilation (LTO disabled for faster build)..."
           
           cd "$ANDROID_BUILD_TOP"
           
@@ -203,13 +229,18 @@ jobs:
           # Add toolchain to PATH
           export PATH="${CLANG_PATH}/bin:${PATH}"
           
-          echo "Build configuration:"
+          # Disable LTO to reduce compilation time
+          export KBUILD_CFLAGS="-O2 -Wno-error"
+          
+          echo "📋 Build Configuration:"
           echo "  MODEL=${MODEL}"
           echo "  CHIPSET_NAME=${CHIPSET_NAME}"
           echo "  TARGET_PRODUCT=${TARGET_PRODUCT}"
           echo "  ARCH=${ARCH}"
           echo "  CROSS_COMPILE=${CROSS_COMPILE}"
           echo "  OUT_DIR=${OUT_DIR}"
+          echo "  LTO Status: DISABLED (faster builds)"
+          echo "  Compiler: Clang"
           
           # Verify toolchain is accessible
           if ! command -v clang &>/dev/null; then
@@ -221,15 +252,20 @@ jobs:
           aarch64-linux-gnu-gcc --version | head -1
           
           # Check disk space before build
+          echo ""
           echo "📊 Disk space before build:"
           df -h "$OUT_DIR" 2>/dev/null | tail -1 || df -h . | tail -1
           
-          # Run the build exactly as documented
+          # Run the build
+          echo ""
           echo "Executing: RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}"
+          echo "---"
           if RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}; then
-            echo "✓ Kernel compilation completed successfully"
+            echo "---"
+            echo "✅ Kernel compilation completed successfully"
           else
             BUILD_EXIT_CODE=$?
+            echo "---"
             echo "❌ ERROR: Kernel compilation failed with exit code $BUILD_EXIT_CODE"
             
             # Dump diagnostics
@@ -398,6 +434,9 @@ jobs:
           echo "- **Model**: ${{ env.MODEL }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Chipset**: ${{ env.CHIPSET_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Product**: ${{ env.TARGET_PRODUCT }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Optimization**: LTO Disabled ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Job Timeout**: 300 minutes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compile Timeout**: 240 minutes" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -f Custom-Kernel-SM-X700.zip ]; then
