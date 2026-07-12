@@ -28,6 +28,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Set up Swap Space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
       - name: Free Up Disk Space
         run: |
           set -euo pipefail
