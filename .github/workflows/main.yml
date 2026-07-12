@@ -194,35 +194,23 @@ jobs:
             echo "✓ Kernel cleaned manually"
           fi
 
-      - name: Disable LTO for Faster Build
+      - name: Configure LTO for Faster Build
         run: |
           set -euo pipefail
-          echo "⚙️  Disabling LTO optimization to reduce compilation time..."
+          echo "⚙️  Switching to ThinLTO to reduce compilation time..."
           
-          cd "$ANDROID_BUILD_TOP"
-          
-          # Create kernel config fragment to disable LTO
-          mkdir -p "$OUT_DIR"
-          cat > "$OUT_DIR/lto_disable.config" << 'EOF'
-          # Disable Link-Time Optimization for faster builds
-          CONFIG_LTO_CLANG=n
-          CONFIG_LTO_CLANG_FULL=n
-          CONFIG_LTO_CLANG_THIN=n
-          CONFIG_LTO=n
-          CONFIG_LTO_GCC=n
-          EOF
-          
-          echo "✓ LTO configuration created at $OUT_DIR/lto_disable.config"
-          cat "$OUT_DIR/lto_disable.config"
-          
-          # Export for use in compilation
-          echo "LTO_CONFIG=$OUT_DIR/lto_disable.config" >> "$GITHUB_ENV"
+          # build/build.sh supports LTO=thin|full|none env var to override the
+          # defconfig setting at build time. Using "thin" avoids the full LTO
+          # link step (which times out on GitHub-hosted runners) while still
+          # producing a valid kernel with LTO-dependent features like CFI intact.
+          echo "LTO=thin" >> "$GITHUB_ENV"
+          echo "✓ LTO mode set to 'thin' (build.sh will apply this during compilation)"
 
       - name: Compile Kernel
         timeout-minutes: 300
         run: |
           set -euo pipefail
-          echo "🚀 Starting kernel compilation (LTO disabled, parallel jobs limited)..."
+          echo "🚀 Starting kernel compilation (ThinLTO, parallel jobs limited)..."
           
           cd "$ANDROID_BUILD_TOP"
           
@@ -234,7 +222,7 @@ jobs:
           # Add toolchain to PATH
           export PATH="${CLANG_PATH}/bin:${PATH}"
           
-          # Disable LTO and reduce parallel jobs for reliable builds
+          # Reduce parallel jobs for reliable builds
           export KBUILD_CFLAGS="-O2 -Wno-error"
           export KBUILD_JOBS=4
           
@@ -245,7 +233,7 @@ jobs:
           echo "  ARCH=${ARCH}"
           echo "  CROSS_COMPILE=${CROSS_COMPILE}"
           echo "  OUT_DIR=${OUT_DIR}"
-          echo "  LTO Status: DISABLED (faster builds) ✅"
+          echo "  LTO Mode: ${LTO} (build.sh will apply this override) ✅"
           echo "  Parallel Jobs: 4 (reduced for stability) ✅"
           echo "  Compiler: Clang"
           
@@ -263,9 +251,10 @@ jobs:
           echo "📊 Disk space before build:"
           df -h "$OUT_DIR" 2>/dev/null | tail -1 || df -h . | tail -1
           
-          # Run the build
+          # Run the build — LTO env var is inherited from $GITHUB_ENV and picked
+          # up by build/build.sh to override the defconfig's LTO_CLANG_FULL=y
           echo ""
-          echo "Executing: RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}"
+          echo "Executing: LTO=${LTO} RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}"
           echo "---"
           if RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}; then
             echo "---"
@@ -441,7 +430,7 @@ jobs:
           echo "- **Model**: ${{ env.MODEL }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Chipset**: ${{ env.CHIPSET_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Product**: ${{ env.TARGET_PRODUCT }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Optimization**: LTO Disabled ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Optimization**: ThinLTO ✅" >> $GITHUB_STEP_SUMMARY
           echo "- **Parallel Jobs**: 4 (limited for stability) ✅" >> $GITHUB_STEP_SUMMARY
           echo "- **Job Timeout**: 360 minutes (6 hours)" >> $GITHUB_STEP_SUMMARY
           echo "- **Compile Timeout**: 300 minutes (5 hours)" >> $GITHUB_STEP_SUMMARY
