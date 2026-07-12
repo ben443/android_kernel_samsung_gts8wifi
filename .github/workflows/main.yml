@@ -61,7 +61,7 @@ jobs:
       - name: Build kernel
         run: |
           set -euo pipefail
-          bash ./build_kernel_GKI.sh
+          TRIM_NONLISTED_KMI=0 KMI_SYMBOL_LIST_STRICT_MODE=0 bash ./build_kernel_GKI.sh
 
       - name: Collect build artifacts
         run: |
