@@ -174,25 +174,22 @@ jobs:
           set -euo pipefail
           echo "🧹 Cleaning kernel source tree..."
           
-          cd "$ANDROID_BUILD_TOP/common"
+          cd "$ANDROID_BUILD_TOP"
           
-          # Remove build artifacts
-          rm -rf .config* .version* Module.symvers build/ 2>/dev/null || true
-          
-          # Run make mrproper if possible
-          if make mrproper 2>&1 | head -20; then
-            echo "✓ Kernel cleaned with make mrproper"
+          # The build fails in kernel_platform/msm-kernel when tree is not clean.
+          # Clean the actual kernel source used by prepare_vendor.sh.
+          if [ -d "msm-kernel" ]; then
+            make -C msm-kernel mrproper
+            echo "✓ msm-kernel cleaned with mrproper"
           else
-            echo "⚠️  make mrproper had issues, using fallback cleanup"
-            find . -name "*.o" -delete 2>/dev/null || true
-            find . -name "*.ko" -delete 2>/dev/null || true
-            find . -name ".*.cmd" -delete 2>/dev/null || true
-            find . -name ".config*" -delete 2>/dev/null || true
-            find . -name ".version*" -delete 2>/dev/null || true
-            find . -type f -name "modules.order" -delete 2>/dev/null || true
-            find . -type f -name "Module.symvers" -delete 2>/dev/null || true
-            echo "✓ Kernel cleaned manually"
+            echo "❌ ERROR: msm-kernel directory not found"
+            exit 1
           fi
+          
+          # Also clear previous output artifacts to avoid stale state
+          rm -rf "out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}" 2>/dev/null || true
+          rm -rf "out/target/product/${MODEL}" 2>/dev/null || true
+          echo "✓ Stale output directories removed"
 
       - name: Configure LTO for Faster Build
         run: |
