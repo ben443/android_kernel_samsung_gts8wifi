@@ -33,5 +33,5 @@ export KBUILD_EXT_MODULES="../vendor/qcom/opensource/datarmnet-ext/wlan \
 "
   
 #3. build kernel
-LTO=none RECOMPILE_KERNEL=1 ./kernel_platform/build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}
+LTO=thin  RECOMPILE_KERNEL=1 ./kernel_platform/build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}
 #TO=none RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}
