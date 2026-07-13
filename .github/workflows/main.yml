@@ -176,15 +176,20 @@ jobs:
           
           cd "$ANDROID_BUILD_TOP"
           
-          # The build fails in kernel_platform/msm-kernel when tree is not clean.
-          # Clean the actual kernel source used by prepare_vendor.sh.
-          if [ -d "msm-kernel" ]; then
-            make -C msm-kernel mrproper
-            echo "✓ msm-kernel cleaned with mrproper"
-          else
-            echo "❌ ERROR: msm-kernel directory not found"
-            exit 1
-          fi
+          # Both common/ (used by the GKI build) and msm-kernel/ (used by the
+          # device build) ship tracked build artifacts (.config, include/config/,
+          # include/generated/) that cause the out-of-tree build to abort with
+          # "The source tree is not clean, please run 'make mrproper'".
+          # Clean both trees so SKIP_MRPROPER=1 in prepare_vendor.sh works.
+          for tree in common msm-kernel; do
+            if [ -d "$tree" ]; then
+              make -C "$tree" mrproper
+              echo "✓ $tree cleaned with mrproper"
+            else
+              echo "❌ ERROR: $tree directory not found"
+              exit 1
+            fi
+          done
           
           # Also clear previous output artifacts to avoid stale state
           rm -rf "out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}" 2>/dev/null || true
