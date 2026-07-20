@@ -212,7 +212,7 @@ jobs:
         timeout-minutes: 300
         run: |
           set -euo pipefail
-          echo "🚀 Starting kernel compilation (ThinLTO, parallel jobs limited)..."
+          echo "🚀 Starting kernel compilation (ThinLTO, NetHunter INJECT, parallel jobs limited)..."
           
           cd "$ANDROID_BUILD_TOP"
           
@@ -234,6 +234,26 @@ jobs:
           export KBUILD_CFLAGS="-O2 -Wno-error"
           export KBUILD_JOBS=4
           
+          # INJECT KALI NETHUNTER MODULES INTO DEFCONFIG
+          export POST_DEFCONFIG_CMDS="
+            \${KERNEL_DIR}/scripts/config --file \${OUT_DIR}/.config \
+              -e SYSVIPC \
+              -e USB_CONFIGFS_F_HID \
+              -e MAC80211 \
+              -e MAC80211_INJECT \
+              -e CFG80211 \
+              -e CFG80211_WEXT \
+              -e WLAN_VENDOR_ATH \
+              -e ATH9K \
+              -e ATH9K_HTC \
+              -e WLAN_VENDOR_REALTEK \
+              -e RTL8187 \
+              -e RTL8192CU \
+              -e WLAN_VENDOR_RALINK \
+              -e RT2800USB;
+            (cd \${OUT_DIR} && make \"\${TOOL_ARGS[@]}\" O=\${OUT_DIR} \"\${MAKE_ARGS[@]}\" olddefconfig)
+          "
+          
           echo "📋 Build Configuration:"
           echo "  MODEL=${MODEL}"
           echo "  CHIPSET_NAME=${CHIPSET_NAME}"
@@ -242,6 +262,7 @@ jobs:
           echo "  CROSS_COMPILE=${CROSS_COMPILE}"
           echo "  OUT_DIR=${OUT_DIR}"
           echo "  LTO Mode: ${LTO} (build.sh will apply this override) ✅"
+          echo "  Kali NetHunter Modules: Injected via POST_DEFCONFIG_CMDS ✅"
           echo "  GKI KMI strict symbol-list check: disabled for CI artifact builds ✅"
           echo "  Parallel Jobs: 4 (reduced for stability) ✅"
           echo "  Compiler: Clang"
@@ -440,6 +461,7 @@ jobs:
           echo "- **Chipset**: ${{ env.CHIPSET_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Product**: ${{ env.TARGET_PRODUCT }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Optimization**: ThinLTO ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kali NetHunter**: Injected ✅" >> $GITHUB_STEP_SUMMARY
           echo "- **Parallel Jobs**: 4 (limited for stability) ✅" >> $GITHUB_STEP_SUMMARY
           echo "- **Job Timeout**: 360 minutes (6 hours)" >> $GITHUB_STEP_SUMMARY
           echo "- **Compile Timeout**: 300 minutes (5 hours)" >> $GITHUB_STEP_SUMMARY
