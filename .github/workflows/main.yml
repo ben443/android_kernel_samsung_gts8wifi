@@ -1,476 +1,179 @@
-name: Build Custom Wi-Fi Kernel (SM-X700)
+name: Build Kernel and Modules
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
-
-env:
-  MODEL: gts8wifi
-  PROJECT_NAME: gts8wifi
-  REGION: xsp
-  CARRIER: open
-  TARGET_BUILD_VARIANT: user
-  CHIPSET_NAME: waipio
-  TARGET_PRODUCT: gki
-  TARGET_BOARD_PLATFORM: gki
-  ARCH: arm64
-  CROSS_COMPILE: aarch64-linux-gnu-
+    inputs:
+      defconfig:
+        description: "Kernel defconfig target (e.g. gki_defconfig)"
+        required: false
+        default: "gki_defconfig"
+      extra_make_args:
+        description: "Extra make args (optional)"
+        required: false
+        default: ""
 
 jobs:
-  build-kernel:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+  build:
+    name: Build kernel + modules
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      OUT_DIR: out
+      LLVM: "1"
+      LLVM_IAS: "1"
+      CC: clang
+      CLANG_TRIPLE: aarch64-linux-gnu-
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
+      KCFLAGS: -Wno-error
+      # Cap parallel jobs to prevent memory exhaustion
+      MAKEFLAGS: -j2 
 
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Set up Swap Space
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 16
-
-      - name: Free Up Disk Space
+      - name: Install base dependencies
         run: |
-          set -euo pipefail
-          echo "📊 Disk space before cleanup:"
-          df -h / | tail -1
-          
-          sudo apt-get clean -y
-          sudo apt-get autoclean -y
-          sudo apt-get autoremove -y
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/hostedtoolcache
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/share/swift
-          
-          echo "📊 Disk space after cleanup:"
-          df -h / | tail -1
+          set -euxo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl dwarves flex git kmod \
+            libelf-dev libncurses-dev libssl-dev lz4 pahole python3 rsync \
+            xz-utils zstd zip
 
-      - name: Install Build Dependencies
+      - name: Setup Proton-Clang Toolchain
         run: |
-          set -euo pipefail
-          echo "📦 Installing build dependencies..."
-          
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            make \
-            libc6-dev \
-            clang \
-            lld \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            libelf-dev \
-            zip \
-            unzip \
-            python3 \
-            python3-dev \
-            git \
-            curl \
-            wget \
-            ca-certificates
-          
-          echo "✓ Build environment ready"
-          clang --version | head -1
-          aarch64-linux-gnu-gcc --version | head -1
+          set -euxo pipefail
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $HOME/proton-clang
+          # Inject the toolchain into the runner's PATH for all subsequent steps
+          echo "$HOME/proton-clang/bin" >> $GITHUB_PATH
 
-      - name: Validate Repository Structure
+      - name: Configure swap space
         run: |
-          set -euo pipefail
-          echo "🔍 Validating kernel repository structure..."
+          set -euxo pipefail
+          # Provision additional swap on the runner's ephemeral SSD
+          sudo fallocate -l 12G /mnt/extra-swap
+          sudo chmod 600 /mnt/extra-swap
+          sudo mkswap /mnt/extra-swap
+          sudo swapon /mnt/extra-swap
           
-          # Check critical directories
-          for dir in kernel_platform kernel_platform/common kernel_platform/build kernel_platform/build/android; do
-            if [ ! -d "$dir" ]; then
-              echo "❌ ERROR: Required directory not found: $dir"
-              echo "Repository structure:"
-              ls -lR . | head -50
-              exit 1
-            fi
-          done
-          
-          # Check critical scripts exist
-          if [ ! -f "kernel_platform/build/android/prepare_vendor.sh" ]; then
-            echo "❌ ERROR: prepare_vendor.sh not found"
-            ls -la kernel_platform/build/android/ || true
-            exit 1
+          free -h
+          swapon --show
+
+      - name: Print tool versions
+        run: |
+          set -euxo pipefail
+          uname -a
+          clang --version || true
+          ld.lld --version || true
+          aarch64-linux-gnu-gcc --version || true
+          arm-linux-gnueabi-gcc --version || true
+          make --version
+
+      - name: Resolve defconfig
+        id: cfg
+        run: |
+          set -euxo pipefail
+          DEFCONFIG="${{ github.event.inputs.defconfig }}"
+          if [ -z "${DEFCONFIG}" ]; then
+            DEFCONFIG="gki_defconfig"
           fi
-          
-          echo "✓ Repository structure valid"
+          echo "defconfig=${DEFCONFIG}" >> "$GITHUB_OUTPUT"
 
-      - name: Setup Build Environment
+      - name: Configure kernel
         run: |
-          set -euo pipefail
-          echo "🔧 Configuring build environment..."
+          set -euxo pipefail
+          mkdir -p "${OUT_DIR}"
+          make ARCH=${ARCH} O=${OUT_DIR} "${{ steps.cfg.outputs.defconfig }}"
+          make ARCH=${ARCH} O=${OUT_DIR} olddefconfig
+          cp "${OUT_DIR}/.config" "${OUT_DIR}/config.final"
+
+      - name: Build kernel image and modules
+        run: |
+          set -euxo pipefail
+          EXTRA_ARGS="${{ github.event.inputs.extra_make_args }}"
+          make ARCH=${ARCH} O=${OUT_DIR} \
+            LLVM=${LLVM} LLVM_IAS=${LLVM_IAS} \
+            CC=${CC} CLANG_TRIPLE=${CLANG_TRIPLE} \
+            CROSS_COMPILE=${CROSS_COMPILE} CROSS_COMPILE_COMPAT=${CROSS_COMPILE_COMPAT} \
+            KCFLAGS="${KCFLAGS}" \
+            ${EXTRA_ARGS} \
+            Image modules dtbs
+
+      - name: Install modules to staging
+        run: |
+          set -euxo pipefail
+          rm -rf module_staging
+          mkdir -p module_staging
+          make ARCH=${ARCH} O=${OUT_DIR} \
+            LLVM=${LLVM} LLVM_IAS=${LLVM_IAS} \
+            CC=${CC} CLANG_TRIPLE=${CLANG_TRIPLE} \
+            CROSS_COMPILE=${CROSS_COMPILE} CROSS_COMPILE_COMPAT=${CROSS_COMPILE_COMPAT} \
+            INSTALL_MOD_STRIP=1 \
+            modules_install INSTALL_MOD_PATH="${PWD}/module_staging"
+            
+          # CRITICAL: Remove the build/source symlinks so the artifact 
+          # uploader doesn't package the entire kernel source tree.
+          rm -f module_staging/lib/modules/*/build
+          rm -f module_staging/lib/modules/*/source
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf artifacts
+          mkdir -p artifacts/kernel artifacts/modules artifacts/meta
+
+          cp -v "${OUT_DIR}/arch/arm64/boot/Image" artifacts/kernel/ || true
+          cp -v "${OUT_DIR}/arch/arm64/boot/Image.gz" artifacts/kernel/ || true
+          cp -v "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" artifacts/kernel/ || true
+
+          shopt -s globstar nullglob
           
-          cd kernel_platform
-          ANDROID_BUILD_TOP="$(pwd)"
-          
-          # Create output directories
-          OUT_DIR="${ANDROID_BUILD_TOP}/out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}"
-          ANDROID_PRODUCT_OUT="${ANDROID_BUILD_TOP}/out/target/product/${MODEL}"
-          
-          mkdir -p "$OUT_DIR"
-          mkdir -p "$ANDROID_PRODUCT_OUT"
-          
-          # Export to GitHub environment for all subsequent steps
+          # OPTIMIZATION: Only collect Qualcomm (qcom) DTBs
+          DTBS=( ${OUT_DIR}/arch/arm64/boot/dts/qcom/**/*.dtb )
+          DTBOS=( ${OUT_DIR}/arch/arm64/boot/dts/qcom/**/*.dtbo )
+
+          if (( ${#DTBS[@]} > 0 )); then
+            mkdir -p artifacts/kernel/dtb
+            cp -v "${DTBS[@]}" artifacts/kernel/dtb/
+          fi
+          if (( ${#DTBOS[@]} > 0 )); then
+            mkdir -p artifacts/kernel/dtbo
+            cp -v "${DTBOS[@]}" artifacts/kernel/dtbo/
+          fi
+
+          rsync -a module_staging/ artifacts/modules/
+          cp -v "${OUT_DIR}/Module.symvers" artifacts/meta/ || true
+          cp -v "${OUT_DIR}/System.map" artifacts/meta/ || true
+          cp -v "${OUT_DIR}/vmlinux" artifacts/meta/ || true
+          cp -v "${OUT_DIR}/config.final" artifacts/meta/.config || true
+
           {
-            echo "ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP}"
-            echo "OUT_DIR=${OUT_DIR}"
-            echo "ANDROID_PRODUCT_OUT=${ANDROID_PRODUCT_OUT}"
-          } >> "$GITHUB_ENV"
-          
-          echo "✓ Build environment configured:"
-          echo "  ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP}"
-          echo "  OUT_DIR=${OUT_DIR}"
-          echo "  ANDROID_PRODUCT_OUT=${ANDROID_PRODUCT_OUT}"
+            echo "Repo: $GITHUB_REPOSITORY"
+            echo "SHA: $GITHUB_SHA"
+            echo "Ref: $GITHUB_REF"
+            echo "Defconfig: ${{ steps.cfg.outputs.defconfig }}"
+            echo "Build time (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > artifacts/meta/build-manifest.txt
 
-      - name: Prepare Toolchain
-        run: |
-          set -euo pipefail
-          echo "🛠️  Preparing toolchain..."
-          
-          cd "$ANDROID_BUILD_TOP"
-          
-          # Check if prebuilts already exist in repo
-          if [ -d "prebuilts-master/clang/host/linux-x86/clang-r416183b" ]; then
-            echo "✓ Clang toolchain found in repository"
-            CLANG_PATH="$(pwd)/prebuilts-master/clang/host/linux-x86/clang-r416183b"
-          elif [ -d "prebuilts/clang/host/linux-x86/clang-r416183b" ]; then
-            echo "✓ Clang toolchain found in prebuilts"
-            CLANG_PATH="$(pwd)/prebuilts/clang/host/linux-x86/clang-r416183b"
-          else
-            echo "❌ ERROR: Clang toolchain not found in repository"
-            echo "Expected: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b"
-            echo "Current prebuilts structure:"
-            find . -maxdepth 5 -name "clang*" 2>/dev/null | head -10 || echo "  (none found)"
-            exit 1
-          fi
-          
-          # Verify clang binary exists
-          if [ ! -f "$CLANG_PATH/bin/clang" ]; then
-            echo "❌ ERROR: clang binary not found at $CLANG_PATH/bin/clang"
-            ls -la "$CLANG_PATH/bin/" || true
-            exit 1
-          fi
-          
-          echo "✓ Clang toolchain verified at $CLANG_PATH"
-          "$CLANG_PATH/bin/clang" --version | head -1
-          
-          # Export toolchain path for subsequent steps
-          echo "CLANG_PATH=${CLANG_PATH}" >> "$GITHUB_ENV"
-
-      - name: Clean Kernel Source
-        run: |
-          set -euo pipefail
-          echo "🧹 Cleaning kernel source tree..."
-          
-          cd "$ANDROID_BUILD_TOP"
-          
-          # Both common/ (used by the GKI build) and msm-kernel/ (used by the
-          # device build) ship tracked build artifacts (.config, include/config/,
-          # include/generated/) that cause the out-of-tree build to abort with
-          # "The source tree is not clean, please run 'make mrproper'".
-          # Clean both trees so SKIP_MRPROPER=1 in prepare_vendor.sh works.
-          for tree in common msm-kernel; do
-            if [ -d "$tree" ]; then
-              make -C "$tree" mrproper
-              echo "✓ $tree cleaned with mrproper"
-            else
-              echo "❌ ERROR: $tree directory not found"
-              exit 1
-            fi
-          done
-          
-          # Also clear previous output artifacts to avoid stale state
-          rm -rf "out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}" 2>/dev/null || true
-          rm -rf "out/target/product/${MODEL}" 2>/dev/null || true
-          echo "✓ Stale output directories removed"
-
-      - name: Configure LTO for Faster Build
-        run: |
-          set -euo pipefail
-          echo "⚙️  Switching to ThinLTO to reduce compilation time..."
-          
-          # build/build.sh supports LTO=thin|full|none env var to override the
-          # defconfig setting at build time. Using "thin" avoids the full LTO
-          # link step (which times out on GitHub-hosted runners) while still
-          # producing a valid kernel with LTO-dependent features like CFI intact.
-          echo "LTO=thin" >> "$GITHUB_ENV"
-          echo "✓ LTO mode set to 'thin' (build.sh will apply this during compilation)"
-
-      - name: Compile Kernel
-        timeout-minutes: 300
-        run: |
-          set -euo pipefail
-          echo "🚀 Starting kernel compilation (ThinLTO, NetHunter INJECT, parallel jobs limited)..."
-          
-          cd "$ANDROID_BUILD_TOP"
-          
-          # Set up environment per Samsung documentation
-          export ARCH=${{ env.ARCH }}
-          export CROSS_COMPILE=${{ env.CROSS_COMPILE }}
-          export CLANG_TRIPLE=aarch64-linux-gnu
-          
-          # Add toolchain to PATH
-          export PATH="${CLANG_PATH}/bin:${PATH}"
-
-          # The hosted CI build only needs a flashable artifact. Skip the strict
-          # GKI symbol-list post-check that currently fails on module_layout after
-          # the kernel image has already been produced.
-          export GKI_TRIM_NONLISTED_KMI=0
-          export GKI_KMI_SYMBOL_LIST_STRICT_MODE=0
-
-          # Reduce parallel jobs for reliable builds
-          export KBUILD_CFLAGS="-O2 -Wno-error"
-          export KBUILD_JOBS=4
-          
-          # INJECT KALI NETHUNTER MODULES INTO DEFCONFIG
-          export POST_DEFCONFIG_CMDS="
-            \${KERNEL_DIR}/scripts/config --file \${OUT_DIR}/.config \
-              -e SYSVIPC \
-              -e USB_CONFIGFS_F_HID \
-              -e MAC80211 \
-              -e MAC80211_INJECT \
-              -e CFG80211 \
-              -e CFG80211_WEXT \
-              -e WLAN_VENDOR_ATH \
-              -e ATH9K \
-              -e ATH9K_HTC \
-              -e WLAN_VENDOR_REALTEK \
-              -e RTL8187 \
-              -e RTL8192CU \
-              -e WLAN_VENDOR_RALINK \
-              -e RT2800USB;
-            (cd \${OUT_DIR} && make \"\${TOOL_ARGS[@]}\" O=\${OUT_DIR} \"\${MAKE_ARGS[@]}\" olddefconfig)
-          "
-          
-          echo "📋 Build Configuration:"
-          echo "  MODEL=${MODEL}"
-          echo "  CHIPSET_NAME=${CHIPSET_NAME}"
-          echo "  TARGET_PRODUCT=${TARGET_PRODUCT}"
-          echo "  ARCH=${ARCH}"
-          echo "  CROSS_COMPILE=${CROSS_COMPILE}"
-          echo "  OUT_DIR=${OUT_DIR}"
-          echo "  LTO Mode: ${LTO} (build.sh will apply this override) ✅"
-          echo "  Kali NetHunter Modules: Injected via POST_DEFCONFIG_CMDS ✅"
-          echo "  GKI KMI strict symbol-list check: disabled for CI artifact builds ✅"
-          echo "  Parallel Jobs: 4 (reduced for stability) ✅"
-          echo "  Compiler: Clang"
-          
-          # Verify toolchain is accessible
-          if ! command -v clang &>/dev/null; then
-            echo "❌ ERROR: clang not in PATH"
-            exit 1
-          fi
-          
-          clang --version | head -1
-          aarch64-linux-gnu-gcc --version | head -1
-          
-          # Check disk space before build
-          echo ""
-          echo "📊 Disk space before build:"
-          df -h "$OUT_DIR" 2>/dev/null | tail -1 || df -h . | tail -1
-          
-          # Run the build — LTO env var is inherited from $GITHUB_ENV and picked
-          # up by build/build.sh to override the defconfig's LTO_CLANG_FULL=y
-          echo ""
-          echo "Executing: LTO=${LTO} RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}"
-          echo "---"
-          if RECOMPILE_KERNEL=1 bash build/android/prepare_vendor.sh sec ${TARGET_PRODUCT}; then
-            echo "---"
-            echo "✅ Kernel compilation completed successfully"
-          else
-            BUILD_EXIT_CODE=$?
-            echo "---"
-            echo "❌ ERROR: Kernel compilation failed with exit code $BUILD_EXIT_CODE"
-            
-            # Dump diagnostics
-            echo ""
-            echo "📋 Build diagnostics:"
-            echo "OUT_DIR contents:"
-            ls -lR "$OUT_DIR" 2>/dev/null | head -100 || echo "  (directory not accessible)"
-            echo ""
-            echo "Recent build logs:"
-            find "$OUT_DIR" -name "*.log" -type f -exec tail -20 {} + 2>/dev/null | head -100 || true
-            
-            exit $BUILD_EXIT_CODE
-          fi
-
-      - name: Discover and Verify Kernel Output
-        run: |
-          set -euo pipefail
-          echo "🔎 Discovering kernel build output..."
-          
-          cd "$ANDROID_BUILD_TOP"
-          
-          # Search for kernel image with multiple strategies
-          echo "Searching for kernel image..."
-          KERNEL_IMAGE=""
-          
-          # Strategy 1: Expected path
-          if [ -f "out/msm-waipio-waipio-gki/arch/arm64/boot/Image" ]; then
-            KERNEL_IMAGE="out/msm-waipio-waipio-gki/arch/arm64/boot/Image"
-          fi
-          
-          # Strategy 2: Find any Image file >5MB in out directory
-          if [ -z "$KERNEL_IMAGE" ]; then
-            KERNEL_IMAGE=$(find out -type f -name "Image" -size +5M 2>/dev/null | head -1)
-          fi
-          
-          # Strategy 3: Find any Image* file >5MB
-          if [ -z "$KERNEL_IMAGE" ]; then
-            KERNEL_IMAGE=$(find out -type f -name "Image*" -size +5M 2>/dev/null | head -1)
-          fi
-          
-          if [ -z "$KERNEL_IMAGE" ]; then
-            echo "❌ ERROR: Kernel image not found"
-            echo "Searching all files >10MB in out/:"
-            find out -type f -size +10M 2>/dev/null || echo "  (none found)"
-            echo ""
-            echo "Full out/ structure:"
-            ls -lR out/ 2>/dev/null | head -100 || echo "  (out/ not found)"
-            exit 1
-          fi
-          
-          echo "✓ Kernel image found: $KERNEL_IMAGE"
-          ls -lh "$KERNEL_IMAGE"
-          
-          # Export for next step
-          echo "KERNEL_IMAGE=${KERNEL_IMAGE}" >> "$GITHUB_ENV"
-          
-          # Search for modules
-          echo ""
-          echo "Searching for kernel modules..."
-          MODULE_COUNT=$(find out -name "*.ko" -type f 2>/dev/null | wc -l)
-          echo "Found $MODULE_COUNT kernel modules (.ko files)"
-          
-          if [ "$MODULE_COUNT" -gt 0 ]; then
-            echo "Module locations:"
-            find out -name "*.ko" -type f | sort | head -10
-            echo "MODULES_FOUND=yes" >> "$GITHUB_ENV"
-          else
-            echo "Note: No modules found (may be expected for GKI builds)"
-            echo "MODULES_FOUND=no" >> "$GITHUB_ENV"
-          fi
-
-      - name: Package with AnyKernel3
-        run: |
-          set -euo pipefail
-          echo "📦 Packaging flashable kernel..."
-          
-          cd "${{ github.workspace }}"
-          
-          # Clean up any previous staging
-          [ -d AK3-Staging ] && rm -rf AK3-Staging
-          
-          # Clone AnyKernel3
-          echo "Cloning AnyKernel3 template..."
-          if ! git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3-Staging; then
-            echo "❌ ERROR: Failed to clone AnyKernel3"
-            exit 1
-          fi
-          rm -rf AK3-Staging/.git
-          
-          # Inject custom anykernel.sh if present
-          if [ -f anykernel.sh ]; then
-            echo "✓ Injecting custom anykernel.sh"
-            cp anykernel.sh AK3-Staging/
-          fi
-          
-          # Copy kernel image
-          echo "Copying kernel image..."
-          if [ ! -f "$ANDROID_BUILD_TOP/$KERNEL_IMAGE" ]; then
-            echo "❌ ERROR: Kernel image not found at $ANDROID_BUILD_TOP/$KERNEL_IMAGE"
-            exit 1
-          fi
-          
-          cp "$ANDROID_BUILD_TOP/$KERNEL_IMAGE" AK3-Staging/Image
-          echo "✓ Kernel image copied"
-          ls -lh AK3-Staging/Image
-          
-          # Copy modules if found
-          if [ "$MODULES_FOUND" = "yes" ]; then
-            echo "Copying kernel modules..."
-            mkdir -p AK3-Staging/modules/vendor/lib/modules/
-            find "$ANDROID_BUILD_TOP/out" -name "*.ko" -type f -exec cp {} AK3-Staging/modules/vendor/lib/modules/ \;
-            echo "✓ Modules copied ($(ls AK3-Staging/modules/vendor/lib/modules/ | wc -l) files)"
-            ls -lh AK3-Staging/modules/vendor/lib/modules/ | head -5
-          fi
-          
-          # Create flashable zip
-          echo "Creating flashable zip..."
-          cd AK3-Staging
-          
-          if ! zip -r9 ../Custom-Kernel-SM-X700.zip . -x "*.git*" "*.md5"; then
-            echo "❌ ERROR: Failed to create zip"
-            exit 1
-          fi
-          
-          cd "${{ github.workspace }}"
-          
-          if [ ! -f Custom-Kernel-SM-X700.zip ]; then
-            echo "❌ ERROR: Zip file not created"
-            exit 1
-          fi
-          
-          echo "✓ Flashable zip created successfully"
-          ls -lh Custom-Kernel-SM-X700.zip
-          
-          # Verify zip contents
-          echo ""
-          echo "Zip contents:"
-          unzip -l Custom-Kernel-SM-X700.zip | head -20
-
-      - name: Upload Kernel Artifact
-        if: success()
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Custom-Kernel-SM-X700
-          path: Custom-Kernel-SM-X700.zip
-          retention-days: 30
-          compression-level: 0
+          name: kernel-build-${{ github.run_number }}-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 6
 
-      - name: Upload Build Logs on Failure
+      - name: Upload raw output dir (debug fallback)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-failure
-          path: |
-            kernel_platform/out/**/*.log
-            kernel_platform/out/.config
-          retention-days: 7
+          name: kernel-build-debug-out-${{ github.run_number }}-${{ github.sha }}
+          path: out/
           if-no-files-found: warn
-
-      - name: Workflow Summary
-        if: always()
-        run: |
-          echo "## 📊 Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Model**: ${{ env.MODEL }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Chipset**: ${{ env.CHIPSET_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Target Product**: ${{ env.TARGET_PRODUCT }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Optimization**: ThinLTO ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- **Kali NetHunter**: Injected ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- **Parallel Jobs**: 4 (limited for stability) ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- **Job Timeout**: 360 minutes (6 hours)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Compile Timeout**: 300 minutes (5 hours)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f Custom-Kernel-SM-X700.zip ]; then
-            SIZE=$(du -h Custom-Kernel-SM-X700.zip | cut -f1)
-            echo "### ✅ Build Successful" >> $GITHUB_STEP_SUMMARY
-            echo "- **Output**: Custom-Kernel-SM-X700.zip ($SIZE)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "### ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
-          fi
+          compression-level: 0
