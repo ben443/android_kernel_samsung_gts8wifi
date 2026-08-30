@@ -1,0 +1,111 @@
+name: Build GKI Kernel
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: 'Build target (e.g. gts8wifi_eur_open)'
+        required: false
+        default: 'gts8wifi_eur_open'
+
+jobs:
+  build:
+    name: Build GKI Kernel
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            ccache \
+            cpio \
+            curl \
+            flex \
+            git \
+            kmod \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            libyaml-dev \
+            lz4 \
+            make \
+            ninja-build \
+            pahole \
+            perl \
+            python3 \
+            python3-pip \
+            rsync \
+            unzip \
+            wget \
+            xz-utils \
+            zip \
+            zlib1g-dev \
+            zstd
+
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/.local/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+          chmod a+x ~/.local/bin/repo
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 5G
+          key: gki-kernel-${{ github.ref_name }}
+
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@github.com"
+          git config --global user.name "GitHub Actions"
+          git config --global color.ui false
+
+      - name: Build kernel
+        env:
+          BUILD_TARGET: ${{ github.event.inputs.build_target || 'gts8wifi_eur_open' }}
+          # Force NetHunter fragment integration
+          NETHUNTER_ENABLE: "1"
+          # Use ccache
+          CC: "ccache gcc"
+          CXX: "ccache g++"
+        run: |
+          chmod +x build_kernel_GKI.sh
+          bash build_kernel_GKI.sh
+
+      - name: Upload kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ github.event.inputs.build_target || 'gts8wifi_eur_open' }}-${{ github.sha }}
+          path: |
+            out/**/Image
+            out/**/Image.gz
+            out/**/*.ko
+            out/**/System.map
+          retention-days: 7
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.sha }}
+          path: out/**/*.log
+          retentio
+n-days: 3
