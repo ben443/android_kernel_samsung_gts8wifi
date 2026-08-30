@@ -107,5 +107,4 @@ jobs:
         with:
           name: build-logs-${{ github.sha }}
           path: out/**/*.log
-          retentio
-n-days: 3
+          retention-days: 3
